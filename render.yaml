@@ -1,0 +1,14 @@
+# Render Blueprint for Wave Messenger
+# https://render.com/docs/blueprint-spec
+
+services:
+  - type: web
+    name: wave-messenger
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /
+    envVars:
+      - key: NODE_ENV
+        value: production
