@@ -372,7 +372,22 @@ io.on('connection', (socket) => {
                 room.members.push(currentUser.id);
             }
             socket.emit('messages:history', room.messages.slice(-100));
-            socket.emit('room:joined', { roomId, room });
+            socket.emit('room:joined', {
+                roomId,
+                room: {
+                    ...room,
+                    memberCount: room.members.length
+                }
+            });
+
+            // Send member details
+            const memberDetails = room.members.map(memberId => {
+                const user = storage.users.get(memberId);
+                const isOnline = Array.from(storage.onlineUsers.values()).some(u => u.id === memberId);
+                return user ? {...user, isOnline } : null;
+            }).filter(Boolean);
+
+            socket.emit('room:members', { roomId, members: memberDetails });
 
             // Notify others
             socket.to(roomId).emit('room:user-joined', {

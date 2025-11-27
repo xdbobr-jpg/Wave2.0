@@ -5,7 +5,7 @@
     'use strict';
 
     // ===== Configuration =====
-    const CONFIG = {
+    var CONFIG = {
         MAX_MESSAGE_LENGTH: 4000,
         MAX_FILE_SIZE: 50 * 1024 * 1024,
         TYPING_TIMEOUT: 3000,
@@ -16,7 +16,7 @@
     };
 
     // ===== Emoji Data =====
-    const EMOJIS = {
+    var EMOJIS = {
         smileys: ['😀', '😃', '😄', '😁', '😅', '😂', '🤣', '😊', '😇', '🙂', '🙃', '😉', '😌', '😍', '🥰', '😘', '😗', '😙', '😚', '😋', '😛', '😜', '🤪', '😝', '🤑', '🤗', '🤭', '🤫', '🤔', '🤐', '🤨', '😐', '😑', '😶', '😏', '😒', '🙄', '😬', '🤥', '😔', '😪', '🤤', '😴', '😷', '🤒', '🤕', '🤢', '🤮', '🤧', '🥵', '🥶', '🥴', '😵', '🤯', '🤠', '🥳', '🥸', '😎', '🤓', '🧐'],
         people: ['👋', '🤚', '🖐️', '✋', '🖖', '👌', '🤌', '🤏', '✌️', '🤞', '🤟', '🤘', '🤙', '👈', '👉', '👆', '🖕', '👇', '☝️', '👍', '👎', '✊', '👊', '🤛', '🤜', '👏', '🙌', '👐', '🤲', '🤝', '🙏', '✍️', '💅', '🤳', '💪', '🦾', '🦿', '🦵', '🦶', '👂', '🦻', '👃', '🧠', '🫀', '🫁', '🦷', '🦴', '👀', '👁️', '👅', '👄'],
         animals: ['🐱', '🐶', '🐭', '🐹', '🐰', '🦊', '🐻', '🐼', '🐨', '🐯', '🦁', '🐮', '🐷', '🐸', '🐵', '🙈', '🙉', '🙊', '🐒', '🐔', '🐧', '🐦', '🐤', '🐣', '🐥', '🦆', '🦅', '🦉', '🦇', '🐺', '🐗', '🐴', '🦄', '🐝', '🐛', '🦋', '🐌', '🐞', '🐜', '🦟', '🦗', '🕷️', '🦂', '🐢', '🐍', '🦎', '🦖', '🦕', '🐙', '🦑'],
@@ -28,7 +28,7 @@
     };
 
     // ===== State =====
-    const state = {
+    var state = {
         socket: null,
         user: null,
         currentRoom: 'general',
@@ -46,11 +46,16 @@
         notificationSound: localStorage.getItem('notificationSound') !== 'false',
         notificationPreview: localStorage.getItem('notificationPreview') !== 'false',
         isMobile: window.innerWidth <= 768,
-        showSidebar: true
+        showSidebar: true,
+        currentFilter: 'all',
+        unreadCounts: new Map(),
+        isRecordingVoice: false,
+        mediaRecorder: null,
+        audioChunks: []
     };
 
     // ===== DOM Elements =====
-    const elements = {};
+    var elements = {};
 
     // ===== Initialization =====
     function init() {
@@ -59,6 +64,7 @@
         applyColorScheme();
         generateAvatarOptions();
         setupEventListeners();
+        checkMobile();
 
         setTimeout(function() {
             var splashScreen = document.getElementById('splash-screen');
@@ -100,13 +106,22 @@
             'info-panel', 'close-info-btn', 'info-avatar-img', 'info-name', 'info-status',
             'members-list', 'back-btn', 'users-list', 'user-search', 'create-group-btn',
             'unread-badge', 'notification-sound', 'notification-preview', 'color-options',
-            'change-avatar-btn'
+            'change-avatar-btn', 'video-call-btn', 'voice-call-btn', 'chat-search-btn',
+            'chat-more-btn', 'more-btn', 'leave-chat-btn', 'media-grid', 'message-input-area'
         ];
 
         ids.forEach(function(id) {
             var camelCase = id.replace(/-([a-z])/g, function(g) { return g[1].toUpperCase(); });
             elements[camelCase] = document.getElementById(id);
         });
+    }
+
+    function checkMobile() {
+        state.isMobile = window.innerWidth <= 768;
+        if (state.isMobile) {
+            if (elements.sidebar) elements.sidebar.classList.remove('hidden');
+            if (elements.chatMain) elements.chatMain.classList.remove('active');
+        }
     }
 
     // ===== Theme & Color =====
@@ -238,10 +253,23 @@
             if (message.user.id !== userId && state.notificationSound) {
                 playNotificationSound();
             }
+
+            // Update unread count for other rooms
+            if (message.roomId !== state.currentRoom) {
+                var count = state.unreadCounts.get(message.roomId) || 0;
+                state.unreadCounts.set(message.roomId, count + 1);
+                updateUnreadBadges();
+            }
         });
 
         state.socket.on('message:edited', function(message) {
-            var index = state.messages.findIndex(function(m) { return m.id === message.id; });
+            var index = -1;
+            for (var i = 0; i < state.messages.length; i++) {
+                if (state.messages[i].id === message.id) {
+                    index = i;
+                    break;
+                }
+            }
             if (index !== -1) {
                 state.messages[index] = message;
                 updateMessageElement(message);
@@ -257,7 +285,13 @@
         });
 
         state.socket.on('message:reacted', function(data) {
-            var message = state.messages.find(function(m) { return m.id === data.messageId; });
+            var message = null;
+            for (var i = 0; i < state.messages.length; i++) {
+                if (state.messages[i].id === data.messageId) {
+                    message = state.messages[i];
+                    break;
+                }
+            }
             if (message) {
                 message.reactions = data.reactions;
                 updateMessageReactions(data.messageId, data.reactions);
@@ -281,6 +315,7 @@
             });
             renderOnlineUsers();
             updateChatStatus();
+            updateMembersList();
         });
 
         state.socket.on('typing:update', function(users) {
@@ -294,6 +329,9 @@
             state.rooms.set(data.roomId, data.room);
             updateChatHeader(data.room);
             renderRoomList();
+            // Clear unread for this room
+            state.unreadCounts.set(data.roomId, 0);
+            updateUnreadBadges();
         });
 
         state.socket.on('room:created', function(room) {
@@ -304,6 +342,16 @@
 
         state.socket.on('dm:created', function(roomId) {
             state.socket.emit('room:join', roomId);
+        });
+
+        state.socket.on('room:members', function(data) {
+            var room = state.rooms.get(data.roomId);
+            if (room) {
+                room.memberDetails = data.members;
+                if (data.roomId === state.currentRoom) {
+                    updateMembersList();
+                }
+            }
         });
 
         state.socket.on('disconnect', function() {
@@ -335,6 +383,11 @@
         }
         if (elements.sendBtn) {
             elements.sendBtn.addEventListener('click', sendMessage);
+        }
+
+        // Voice message
+        if (elements.voiceBtn) {
+            elements.voiceBtn.addEventListener('click', toggleVoiceRecording);
         }
 
         // Emoji picker
@@ -392,10 +445,19 @@
 
         // New chat
         if (elements.newChatBtn) {
-            elements.newChatBtn.addEventListener('click', function() { openModal('new-chat-modal'); });
+            elements.newChatBtn.addEventListener('click', function() {
+                openModal('new-chat-modal');
+                renderUsersList();
+            });
         }
         if (elements.createRoomBtn) {
             elements.createRoomBtn.addEventListener('click', function() {
+                closeModal('new-chat-modal');
+                openModal('create-room-modal');
+            });
+        }
+        if (elements.createGroupBtn) {
+            elements.createGroupBtn.addEventListener('click', function() {
                 closeModal('new-chat-modal');
                 openModal('create-room-modal');
             });
@@ -431,18 +493,13 @@
         }
 
         // Messages container scroll
-        if (elements.messagesContainer) {
-            elements.messagesContainer.addEventListener('scroll', handleMessagesScroll);
+        if (elements.messages) {
+            elements.messages.addEventListener('scroll', handleMessagesScroll);
         }
 
         // Back button (mobile)
         if (elements.backBtn) {
-            elements.backBtn.addEventListener('click', function() {
-                if (state.isMobile) {
-                    if (elements.chatMain) elements.chatMain.classList.add('hidden');
-                    if (elements.sidebar) elements.sidebar.classList.remove('hidden');
-                }
-            });
+            elements.backBtn.addEventListener('click', goBackToSidebar);
         }
 
         // Chat info click
@@ -475,6 +532,7 @@
             tab.addEventListener('click', function() {
                 document.querySelectorAll('.room-tab').forEach(function(t) { t.classList.remove('active'); });
                 tab.classList.add('active');
+                state.currentFilter = tab.dataset.filter;
                 filterRooms(tab.dataset.filter);
             });
         });
@@ -484,6 +542,7 @@
             item.addEventListener('click', function() {
                 document.querySelectorAll('.nav-item').forEach(function(i) { i.classList.remove('active'); });
                 item.classList.add('active');
+                handleNavigation(item.dataset.view);
             });
         });
 
@@ -504,7 +563,11 @@
 
         // Window resize
         window.addEventListener('resize', debounce(function() {
+            var wasMobile = state.isMobile;
             state.isMobile = window.innerWidth <= 768;
+            if (wasMobile !== state.isMobile) {
+                checkMobile();
+            }
         }, 200));
 
         // Keyboard shortcuts
@@ -518,6 +581,113 @@
         // User search in new chat modal
         if (elements.userSearch) {
             elements.userSearch.addEventListener('input', debounce(handleUserSearch, 300));
+        }
+
+        // Call buttons
+        if (elements.videoCallBtn) {
+            elements.videoCallBtn.addEventListener('click', function() {
+                showToast('Видеозвонки скоро будут доступны! 📹');
+            });
+        }
+        if (elements.voiceCallBtn) {
+            elements.voiceCallBtn.addEventListener('click', function() {
+                showToast('Голосовые звонки скоро будут доступны! 📞');
+            });
+        }
+
+        // Chat search
+        if (elements.chatSearchBtn) {
+            elements.chatSearchBtn.addEventListener('click', function() {
+                showToast('Поиск по чату: используйте Ctrl+F');
+            });
+        }
+
+        // More button
+        if (elements.moreBtn) {
+            elements.moreBtn.addEventListener('click', function() {
+                openModal('settings-modal');
+            });
+        }
+
+        // Chat more button
+        if (elements.chatMoreBtn) {
+            elements.chatMoreBtn.addEventListener('click', toggleInfoPanel);
+        }
+
+        // Leave chat button
+        if (elements.leaveChatBtn) {
+            elements.leaveChatBtn.addEventListener('click', function() {
+                if (confirm('Вы уверены, что хотите покинуть этот чат?')) {
+                    showToast('Вы покинули чат');
+                    if (elements.infoPanel) elements.infoPanel.classList.add('hidden');
+                    goBackToSidebar();
+                }
+            });
+        }
+
+        // Avatar change
+        if (elements.changeAvatarBtn) {
+            elements.changeAvatarBtn.addEventListener('click', function() {
+                if (elements.avatarInput) elements.avatarInput.click();
+            });
+        }
+        if (elements.avatarInput) {
+            elements.avatarInput.addEventListener('change', handleAvatarUpload);
+        }
+
+        // Touch events for mobile
+        setupTouchEvents();
+    }
+
+    function setupTouchEvents() {
+        // Swipe to go back on mobile
+        var touchStartX = 0;
+        var touchEndX = 0;
+
+        if (elements.chatMain) {
+            elements.chatMain.addEventListener('touchstart', function(e) {
+                touchStartX = e.changedTouches[0].screenX;
+            }, { passive: true });
+
+            elements.chatMain.addEventListener('touchend', function(e) {
+                touchEndX = e.changedTouches[0].screenX;
+                handleSwipe();
+            }, { passive: true });
+        }
+
+        function handleSwipe() {
+            var swipeDistance = touchEndX - touchStartX;
+            if (swipeDistance > 100 && state.isMobile) {
+                goBackToSidebar();
+            }
+        }
+    }
+
+    function goBackToSidebar() {
+        if (state.isMobile) {
+            if (elements.chatMain) {
+                elements.chatMain.classList.remove('active');
+                elements.chatMain.classList.add('hidden');
+            }
+            if (elements.sidebar) elements.sidebar.classList.remove('hidden');
+        }
+    }
+
+    function handleNavigation(view) {
+        // Handle navigation between different views
+        switch (view) {
+            case 'chats':
+                state.currentFilter = 'all';
+                filterRooms('all');
+                break;
+            case 'rooms':
+                state.currentFilter = 'groups';
+                filterRooms('groups');
+                break;
+            case 'contacts':
+                openModal('new-chat-modal');
+                renderUsersList();
+                break;
         }
     }
 
@@ -654,7 +824,7 @@
 
         // Avatar
         if (!isSent) {
-            content += '<img src="' + message.user.avatar + '" alt="' + message.user.name + '" class="message-avatar">';
+            content += '<img src="' + message.user.avatar + '" alt="' + message.user.name + '" class="message-avatar" onclick="window.waveApp.showUserProfile(\'' + message.user.id + '\')">';
         }
 
         // Bubble
@@ -662,12 +832,18 @@
 
         // Author (for received messages)
         if (!isSent) {
-            content += '<div class="message-author">' + escapeHtml(message.user.name) + '</div>';
+            content += '<div class="message-author" onclick="window.waveApp.showUserProfile(\'' + message.user.id + '\')">' + escapeHtml(message.user.name) + '</div>';
         }
 
         // Reply
         if (message.replyTo) {
-            var replyMsg = state.messages.find(function(m) { return m.id === message.replyTo; });
+            var replyMsg = null;
+            for (var i = 0; i < state.messages.length; i++) {
+                if (state.messages[i].id === message.replyTo) {
+                    replyMsg = state.messages[i];
+                    break;
+                }
+            }
             if (replyMsg) {
                 var replyText = replyMsg.text ? replyMsg.text.substring(0, 50) : '';
                 content += '<div class="message-reply">' +
@@ -845,6 +1021,89 @@
         return formatted;
     }
 
+    // ===== Voice Recording =====
+    function toggleVoiceRecording() {
+        if (state.isRecordingVoice) {
+            stopVoiceRecording();
+        } else {
+            startVoiceRecording();
+        }
+    }
+
+    function startVoiceRecording() {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            showToast('Запись голоса не поддерживается в вашем браузере', 'error');
+            return;
+        }
+
+        navigator.mediaDevices.getUserMedia({ audio: true })
+            .then(function(stream) {
+                state.mediaRecorder = new MediaRecorder(stream);
+                state.audioChunks = [];
+
+                state.mediaRecorder.ondataavailable = function(e) {
+                    state.audioChunks.push(e.data);
+                };
+
+                state.mediaRecorder.onstop = function() {
+                    var audioBlob = new Blob(state.audioChunks, { type: 'audio/webm' });
+                    sendVoiceMessage(audioBlob);
+                    stream.getTracks().forEach(function(track) { track.stop(); });
+                };
+
+                state.mediaRecorder.start();
+                state.isRecordingVoice = true;
+
+                if (elements.voiceBtn) {
+                    elements.voiceBtn.innerHTML = '<span class="material-symbols-rounded" style="color: var(--md-error)">stop</span>';
+                }
+                showToast('Запись... Нажмите снова для остановки');
+            })
+            .catch(function(err) {
+                console.error('Error accessing microphone:', err);
+                showToast('Не удалось получить доступ к микрофону', 'error');
+            });
+    }
+
+    function stopVoiceRecording() {
+        if (state.mediaRecorder && state.isRecordingVoice) {
+            state.mediaRecorder.stop();
+            state.isRecordingVoice = false;
+
+            if (elements.voiceBtn) {
+                elements.voiceBtn.innerHTML = '<span class="material-symbols-rounded">mic</span>';
+            }
+        }
+    }
+
+    function sendVoiceMessage(audioBlob) {
+        var formData = new FormData();
+        formData.append('file', audioBlob, 'voice_' + Date.now() + '.webm');
+
+        fetch('/upload', {
+                method: 'POST',
+                body: formData
+            })
+            .then(function(response) {
+                if (!response.ok) throw new Error('Upload failed');
+                return response.json();
+            })
+            .then(function(fileInfo) {
+                state.socket.emit('message:file', {
+                    id: fileInfo.id,
+                    name: 'Голосовое сообщение',
+                    url: fileInfo.url,
+                    mimetype: 'audio/webm',
+                    size: fileInfo.size
+                });
+                showToast('Голосовое сообщение отправлено');
+            })
+            .catch(function(error) {
+                console.error('Upload error:', error);
+                showToast('Ошибка отправки голосового сообщения', 'error');
+            });
+    }
+
     // ===== File Upload =====
     function handleFileUpload(e) {
         var files = Array.from(e.target.files);
@@ -884,6 +1143,40 @@
                     showToast('Ошибка загрузки "' + file.name + '"', 'error');
                 });
         });
+
+        e.target.value = '';
+    }
+
+    function handleAvatarUpload(e) {
+        var file = e.target.files[0];
+        if (!file) return;
+
+        if (!file.type.startsWith('image/')) {
+            showToast('Выберите изображение', 'error');
+            return;
+        }
+
+        var formData = new FormData();
+        formData.append('file', file);
+
+        fetch('/upload', {
+                method: 'POST',
+                body: formData
+            })
+            .then(function(response) {
+                if (!response.ok) throw new Error('Upload failed');
+                return response.json();
+            })
+            .then(function(fileInfo) {
+                state.user.avatar = fileInfo.url;
+                state.socket.emit('user:update', { avatar: fileInfo.url });
+                if (elements.settingsAvatar) elements.settingsAvatar.src = fileInfo.url;
+                showToast('Аватар обновлён');
+            })
+            .catch(function(error) {
+                console.error('Upload error:', error);
+                showToast('Ошибка загрузки аватара', 'error');
+            });
 
         e.target.value = '';
     }
@@ -1012,7 +1305,13 @@
         e.preventDefault();
 
         var messageId = messageEl.dataset.messageId;
-        var message = state.messages.find(function(m) { return m.id === messageId; });
+        var message = null;
+        for (var i = 0; i < state.messages.length; i++) {
+            if (state.messages[i].id === messageId) {
+                message = state.messages[i];
+                break;
+            }
+        }
         if (!message) return;
 
         state.selectedMessage = messageId;
@@ -1048,7 +1347,13 @@
         document.querySelectorAll('.context-item').forEach(function(item) {
             item.addEventListener('click', function() {
                 var action = item.dataset.action;
-                var message = state.messages.find(function(m) { return m.id === state.selectedMessage; });
+                var message = null;
+                for (var i = 0; i < state.messages.length; i++) {
+                    if (state.messages[i].id === state.selectedMessage) {
+                        message = state.messages[i];
+                        break;
+                    }
+                }
 
                 if (!message) return;
 
@@ -1120,12 +1425,32 @@
         if (!container) return;
         container.innerHTML = '';
 
+        var roomsArray = [];
         state.rooms.forEach(function(room) {
+            roomsArray.push(room);
+        });
+
+        // Filter rooms based on current filter
+        var filteredRooms = roomsArray.filter(function(room) {
+            switch (state.currentFilter) {
+                case 'unread':
+                    return (state.unreadCounts.get(room.id) || 0) > 0;
+                case 'groups':
+                    return room.type === 'public' || room.type === 'private';
+                case 'dm':
+                    return room.type === 'dm';
+                default:
+                    return true;
+            }
+        });
+
+        filteredRooms.forEach(function(room) {
             var lastMessage = room.lastMessage;
             if (!lastMessage && room.messages && room.messages.length > 0) {
                 lastMessage = room.messages[room.messages.length - 1];
             }
             var isActive = room.id === state.currentRoom;
+            var unreadCount = state.unreadCounts.get(room.id) || 0;
 
             var div = document.createElement('div');
             div.className = 'chat-item' + (isActive ? ' active' : '');
@@ -1137,9 +1462,12 @@
                 var text = lastMessage.text ? lastMessage.text.substring(0, 40) : 'Файл';
                 messageText = escapeHtml(text);
             }
-            var badgeHtml = room.unread ? '<span class="chat-item-badge">' + room.unread + '</span>' : '';
+            var badgeHtml = unreadCount > 0 ? '<span class="chat-item-badge">' + unreadCount + '</span>' : '';
 
-            div.innerHTML = '<img src="https://api.dicebear.com/7.x/shapes/svg?seed=' + room.id + '" ' +
+            var avatarSeed = room.type === 'dm' ? room.id : room.id;
+            var avatarStyle = room.type === 'dm' ? 'avataaars' : 'shapes';
+
+            div.innerHTML = '<img src="https://api.dicebear.com/7.x/' + avatarStyle + '/svg?seed=' + avatarSeed + '" ' +
                 'alt="' + room.name + '" class="chat-item-avatar">' +
                 '<div class="chat-item-content">' +
                 '<div class="chat-item-header">' +
@@ -1155,10 +1483,35 @@
             div.addEventListener('click', function() { joinRoom(room.id); });
             container.appendChild(div);
         });
+
+        // Show empty state if no rooms match filter
+        if (filteredRooms.length === 0) {
+            var emptyDiv = document.createElement('div');
+            emptyDiv.className = 'chat-list-empty';
+            emptyDiv.style.cssText = 'text-align: center; padding: 32px; color: var(--md-on-surface-variant);';
+            emptyDiv.innerHTML = '<span class="material-symbols-rounded" style="font-size: 48px; opacity: 0.5;">inbox</span>' +
+                '<p style="margin-top: 8px;">Нет чатов</p>';
+            container.appendChild(emptyDiv);
+        }
+    }
+
+    function filterRooms(filter) {
+        state.currentFilter = filter;
+        renderRoomList();
     }
 
     function joinRoom(roomId) {
-        if (roomId === state.currentRoom) return;
+        if (roomId === state.currentRoom) {
+            // Just show the chat on mobile
+            if (state.isMobile) {
+                if (elements.sidebar) elements.sidebar.classList.add('hidden');
+                if (elements.chatMain) {
+                    elements.chatMain.classList.remove('hidden');
+                    elements.chatMain.classList.add('active');
+                }
+            }
+            return;
+        }
 
         state.socket.emit('room:join', roomId);
         state.currentRoom = roomId;
@@ -1176,7 +1529,10 @@
         // Mobile: show chat, hide sidebar
         if (state.isMobile) {
             if (elements.sidebar) elements.sidebar.classList.add('hidden');
-            if (elements.chatMain) elements.chatMain.classList.remove('hidden');
+            if (elements.chatMain) {
+                elements.chatMain.classList.remove('hidden');
+                elements.chatMain.classList.add('active');
+            }
         }
     }
 
@@ -1198,8 +1554,9 @@
     function updateChatHeader(room) {
         if (!room) return;
 
+        var avatarStyle = room.type === 'dm' ? 'avataaars' : 'shapes';
         if (elements.chatAvatar) {
-            elements.chatAvatar.src = 'https://api.dicebear.com/7.x/shapes/svg?seed=' + room.id;
+            elements.chatAvatar.src = 'https://api.dicebear.com/7.x/' + avatarStyle + '/svg?seed=' + room.id;
         }
         if (elements.chatName) {
             elements.chatName.textContent = room.name;
@@ -1210,8 +1567,23 @@
         }
     }
 
-    function filterRooms(filter) {
-        // TODO: Implement room filtering
+    function updateUnreadBadges() {
+        var totalUnread = 0;
+        state.unreadCounts.forEach(function(count) {
+            totalUnread += count;
+        });
+
+        if (elements.unreadBadge) {
+            if (totalUnread > 0) {
+                elements.unreadBadge.textContent = totalUnread > 99 ? '99+' : totalUnread;
+                elements.unreadBadge.classList.remove('hidden');
+            } else {
+                elements.unreadBadge.classList.add('hidden');
+            }
+        }
+
+        // Update room list to show badges
+        renderRoomList();
     }
 
     // ===== Online Users =====
@@ -1230,11 +1602,44 @@
 
             var div = document.createElement('div');
             div.className = 'online-user';
-            div.innerHTML = '<img src="' + user.avatar + '" alt="' + user.name + '" class="online-user-avatar">' +
+            div.innerHTML = '<div class="avatar-with-status">' +
+                '<img src="' + user.avatar + '" alt="' + user.name + '" class="online-user-avatar">' +
+                '</div>' +
                 '<span class="online-user-name">' + escapeHtml(user.name) + '</span>';
-            div.addEventListener('click', function() { startDM(user.id); });
+            div.addEventListener('click', function() { showUserProfile(user.id); });
             container.appendChild(div);
         });
+    }
+
+    function renderUsersList() {
+        var container = elements.usersList;
+        if (!container) return;
+        container.innerHTML = '';
+
+        var userId = state.user ? state.user.id : null;
+        state.onlineUsers.forEach(function(user) {
+            if (user.id === userId) return;
+
+            var div = document.createElement('div');
+            div.className = 'user-item';
+            div.innerHTML = '<img src="' + user.avatar + '" alt="' + user.name + '">' +
+                '<div class="user-item-info">' +
+                '<div class="user-item-name">' + escapeHtml(user.name) + '</div>' +
+                '<div class="user-item-status">онлайн</div>' +
+                '</div>';
+            div.addEventListener('click', function() {
+                startDM(user.id);
+                closeModal('new-chat-modal');
+            });
+            container.appendChild(div);
+        });
+
+        if (state.onlineUsers.size <= 1) {
+            var emptyDiv = document.createElement('div');
+            emptyDiv.style.cssText = 'text-align: center; padding: 24px; color: var(--md-on-surface-variant);';
+            emptyDiv.innerHTML = '<p>Нет других пользователей онлайн</p>';
+            container.appendChild(emptyDiv);
+        }
     }
 
     function startDM(userId) {
@@ -1243,6 +1648,126 @@
 
     function updateChatStatus() {
         // Update typing indicator or online status
+    }
+
+    function showUserProfile(userId) {
+        var user = state.onlineUsers.get(userId);
+        if (!user) {
+            // Try to find in messages
+            for (var i = 0; i < state.messages.length; i++) {
+                if (state.messages[i].user.id === userId) {
+                    user = state.messages[i].user;
+                    break;
+                }
+            }
+        }
+
+        if (!user) {
+            showToast('Пользователь не найден');
+            return;
+        }
+
+        // Create and show profile modal
+        var existingModal = document.getElementById('user-profile-modal');
+        if (existingModal) {
+            existingModal.remove();
+        }
+
+        var isOnline = state.onlineUsers.has(userId);
+        var statusClass = isOnline ? 'online' : 'offline';
+        var statusText = isOnline ? 'онлайн' : 'не в сети';
+
+        var modal = document.createElement('div');
+        modal.id = 'user-profile-modal';
+        modal.className = 'modal user-profile-modal';
+        modal.innerHTML = '<div class="modal-backdrop"></div>' +
+            '<div class="modal-content">' +
+            '<div class="profile-header">' +
+            '<img src="' + user.avatar + '" alt="' + user.name + '" class="profile-avatar-large">' +
+            '<div class="profile-name">' + escapeHtml(user.name) + '</div>' +
+            '<div class="profile-status-badge ' + statusClass + '">' + statusText + '</div>' +
+            '</div>' +
+            '<div class="profile-info">' +
+            '<div class="profile-info-item">' +
+            '<span class="material-symbols-rounded">person</span>' +
+            '<div>' +
+            '<div class="profile-info-label">Имя пользователя</div>' +
+            '<div class="profile-info-value">' + escapeHtml(user.name) + '</div>' +
+            '</div>' +
+            '</div>' +
+            '<div class="profile-info-item">' +
+            '<span class="material-symbols-rounded">schedule</span>' +
+            '<div>' +
+            '<div class="profile-info-label">Статус</div>' +
+            '<div class="profile-info-value">' + statusText + '</div>' +
+            '</div>' +
+            '</div>' +
+            '</div>' +
+            '<div class="profile-actions">' +
+            '<button class="primary-btn" id="profile-dm-btn">' +
+            '<span class="material-symbols-rounded">chat</span>' +
+            'Написать' +
+            '</button>' +
+            '</div>' +
+            '</div>';
+
+        document.body.appendChild(modal);
+
+        // Event listeners
+        modal.querySelector('.modal-backdrop').addEventListener('click', function() {
+            modal.remove();
+        });
+
+        modal.querySelector('#profile-dm-btn').addEventListener('click', function() {
+            startDM(userId);
+            modal.remove();
+        });
+    }
+
+    // ===== Members List =====
+    function updateMembersList() {
+        var container = elements.membersList;
+        if (!container) return;
+        container.innerHTML = '';
+
+        var room = state.rooms.get(state.currentRoom);
+        if (!room) return;
+
+        // Get members from online users that are in this room
+        var members = [];
+        if (room.members) {
+            room.members.forEach(function(memberId) {
+                var user = state.onlineUsers.get(memberId);
+                if (user) {
+                    members.push(user);
+                }
+            });
+        }
+
+        // If no specific members, show all online users
+        if (members.length === 0) {
+            state.onlineUsers.forEach(function(user) {
+                members.push(user);
+            });
+        }
+
+        members.forEach(function(user) {
+            var div = document.createElement('div');
+            div.className = 'member-item';
+            div.innerHTML = '<div class="avatar-with-status">' +
+                '<img src="' + user.avatar + '" alt="' + user.name + '" class="member-avatar">' +
+                '</div>' +
+                '<div class="member-info">' +
+                '<div class="member-name">' + escapeHtml(user.name) + '</div>' +
+                '<div class="member-status">онлайн</div>' +
+                '</div>';
+            div.addEventListener('click', function() { showUserProfile(user.id); });
+            container.appendChild(div);
+        });
+
+        if (members.length === 0) {
+            container.innerHTML = '<p style="text-align: center; color: var(--md-on-surface-variant); padding: 16px;">Нет участников</p>';
+        }
     }
 
     // ===== Typing Indicator =====
@@ -1362,22 +1887,24 @@
         if (!elements.infoPanel.classList.contains('hidden')) {
             var room = state.rooms.get(state.currentRoom);
             if (room) {
+                var avatarStyle = room.type === 'dm' ? 'avataaars' : 'shapes';
                 if (elements.infoAvatarImg) {
-                    elements.infoAvatarImg.src = 'https://api.dicebear.com/7.x/shapes/svg?seed=' + room.id;
+                    elements.infoAvatarImg.src = 'https://api.dicebear.com/7.x/' + avatarStyle + '/svg?seed=' + room.id;
                 }
                 if (elements.infoName) elements.infoName.textContent = room.name;
                 if (elements.infoStatus) {
-                    var count = room.memberCount || 0;
+                    var count = room.memberCount || (room.members ? room.members.length : 0);
                     elements.infoStatus.textContent = count + ' участников';
                 }
+                updateMembersList();
             }
         }
     }
 
     // ===== Scroll Handling =====
     function handleMessagesScroll() {
-        if (!elements.messagesContainer) return;
-        var container = elements.messagesContainer;
+        if (!elements.messages) return;
+        var container = elements.messages;
         var isAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 100;
 
         if (elements.scrollBottomBtn) {
@@ -1386,18 +1913,22 @@
     }
 
     function isScrolledToBottom() {
-        if (!elements.messagesContainer) return true;
-        var container = elements.messagesContainer;
+        if (!elements.messages) return true;
+        var container = elements.messages;
         return container.scrollHeight - container.scrollTop - container.clientHeight < 100;
     }
 
     function scrollToBottom(instant) {
         if (!elements.messages) return;
         var container = elements.messages;
-        container.scrollTo({
-            top: container.scrollHeight,
-            behavior: instant ? 'auto' : 'smooth'
-        });
+
+        setTimeout(function() {
+            container.scrollTo({
+                top: container.scrollHeight,
+                behavior: instant ? 'auto' : 'smooth'
+            });
+        }, 50);
+
         if (elements.scrollBottomBtn) elements.scrollBottomBtn.classList.add('hidden');
         if (elements.newMessagesCount) elements.newMessagesCount.classList.add('hidden');
     }
@@ -1480,6 +2011,10 @@
             hideContextMenu();
             hideReactionPicker();
             if (elements.emojiPicker) elements.emojiPicker.classList.add('hidden');
+
+            // Also remove user profile modal if exists
+            var profileModal = document.getElementById('user-profile-modal');
+            if (profileModal) profileModal.remove();
         }
 
         // Ctrl+K for search
@@ -1569,7 +2104,8 @@
         toggleReaction: function(messageId, emoji) {
             state.socket.emit('message:react', { messageId: messageId, emoji: emoji });
         },
-        previewFile: previewFile
+        previewFile: previewFile,
+        showUserProfile: showUserProfile
     };
 
     // ===== Start Application =====
